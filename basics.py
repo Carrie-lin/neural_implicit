@@ -2,9 +2,10 @@
 ## 
 
 ## 
+import os
 import numpy as np
 # import matplotlib.pyplot as plt ## gpufarm does not support interactive visualization
-import opencv2 as cv2
+import cv2
 
 import torch
 import torch.nn as nn
@@ -66,7 +67,7 @@ class Polygon(Shape):
 
 
 
-def plot_sdf(sdf_func, is_net=False):
+def plot_sdf_using_opencv(sdf_func, device, filename=None, is_net=False):
     # See https://stackoverflow.com/questions/33282368/plotting-a-2d-heatmap-with-matplotlib
     
     ## this is the rasterization step that samples the 2D domain as a regular grid
@@ -77,16 +78,23 @@ def plot_sdf(sdf_func, is_net=False):
                 for y_ in  COORDINATES_LINSPACE] 
                 for x_ in COORDINATES_LINSPACE]
     else:
-        z = [[sdf_func(np.float_([x_, y_])).detach() 
+        ## convert []
+        z = [[sdf_func(torch.Tensor([x_, y_]).to(device)).detach().cpu() 
                 for y_ in  COORDINATES_LINSPACE] 
                 for x_ in COORDINATES_LINSPACE]
+        
     z = np.float_(z)
         
     z = z[:-1, :-1]
     z_min, z_max = -np.abs(z).max(), np.abs(z).max()
-    fig, ax = plt.subplots(figsize=(10, 10))
-    c = ax.pcolormesh(x, y, z, cmap='RdBu', vmin=z_min, vmax=z_max)
-    plt.axis([x.min(), x.max(), y.min(), y.max()])
+    
+    ## TODO: use color to differentiate negative and positive
+    z = np.abs(z) / z_max * 255
+    z = np.uint8(z)
+    if filename is None:
+        filename = "tmp_res.png"
+    print(filename)
+    cv2.imwrite(filename, z)
     
 
 
@@ -107,17 +115,12 @@ class Net(nn.Module):
 
 
 if __name__ == "__main__":
-    
-    # ## plot the shapes' signed distance field
-    # circle = Circle(np.float_([0, 0]), 2)
-    # plot_sdf(circle.sdf)
-    # plt.title("SDF to circle")
-    # plt.show()
 
-    # rectangle = Polygon(np.float_([[-1, -1], [-1, 1], [2, 1], [2, -1]]))
-    # plot_sdf(rectangle.sdf)
-    # plt.title("SDF to rectangle")
-    # plt.show()
+    ## make a folder for storing the output images
+    res_dir = 'res_dir'
+    if not os.path.exists(res_dir):
+        os.makedirs(res_dir)
+
 
     ## training sdf
     # define the circle shape
@@ -128,62 +131,62 @@ if __name__ == "__main__":
                     for x_ in np.linspace(-3, 3, 40)])
     # sdf value at these 2d points 
     sdf_train = np.float_(list(map(circle.sdf, points_train)))
-
     # visualize the 2d points with sdf values
-    plot_sdf(circle.sdf)
-    plt.scatter(points_train[:,0], points_train[:,1], color=(1, 1, 1, 0), edgecolor="#000000")
+    plot_sdf_using_opencv(circle.sdf, device=None, filename='circle.png')
+    # plt.scatter(points_train[:,0], points_train[:,1], color=(1, 1, 1, 0), edgecolor="#000000")
+
+
 
     ## now we make the dataset and dataloader for training
     train_ds = TensorDataset(torch.Tensor(points_train), torch.Tensor(sdf_train))
     train_dl = DataLoader(train_ds, shuffle=True, batch_size=len(train_ds))
 
+
+
     ## use cuda or not?
     use_cuda = torch.cuda.is_available()
     print("do you have cuda?", use_cuda)
+
+
 
     ## this is to instantiate a network defined
     net = Net()
     device = torch.device("cuda" if use_cuda else "cpu")    
     print("device: ", device)
     net = net.to(device)
-
     ## this is to set an pytorch optimizer
     opt = optim.SGD(net.parameters(), lr=0.05)
 
+
+
+    ## main training process
     epochs = 1000
     for epoch in range(epochs):
-        net.train() ## set network to the train mode
+        net.train() # set network to the train mode
         total_loss = 0 
         for points_b, sdfs_b in train_dl:
-
-            ## send points_b (a batch of points) to network; this is equivalent to net.forward(points_b)
+            # send points_b (a batch of points) to network; this is equivalent to net.forward(points_b)
             if use_cuda:
                 points_b = points_b.to(device)
                 sdfs_b = sdfs_b.to(device)
             pred = net(points_b)
-
-            ## reshape the pred; you need to check this torch function -- torch.squeeze() -- out
+            # reshape the pred; you need to check this torch function -- torch.squeeze() -- out
             pred = pred.squeeze()
-
-            ## compute loss for this batch
+            # compute loss for this batch
             """
             attention: this loss is different from eq.9 in DeepSDF
             """
             loss = F.l1_loss(pred, sdfs_b)
-            
-            ## aggregate losses in an epoch to check the loss for the entire shape
+            # aggregate losses in an epoch to check the loss for the entire shape
             total_loss += loss
-            
-            ## backpropagation optimization 
+            # backpropagation optimization 
             loss.backward()
             opt.step()
-
-            ## make sure you empty the grad (set them to zero) after each optimizer step.
+            # make sure you empty the grad (set them to zero) after each optimizer step.
             opt.zero_grad()
         
         print("Epoch:", epoch, "Loss:", total_loss.item())
         
-        # if (epoch % 100 == 0):
-        #     plot_sdf(net.forward, is_net=True)
-        #     # plot_sdf(circle.sdf)
-        #     plt.show()
+        if (epoch % 100 == 0):
+            filename = os.path.join(res_dir, "res_"+str(epoch)+".png")
+            plot_sdf_using_opencv(net.forward, device=device, filename=filename, is_net=True)
