@@ -166,6 +166,9 @@ if __name__ == "__main__":
             pred = pred.squeeze()
 
             ## compute loss for this batch
+            """
+            attention: this loss is different from eq.9 in DeepSDF
+            """
             loss = F.l1_loss(pred, sdfs_b)
             
             ## aggregate losses in an epoch to check the loss for the entire shape
